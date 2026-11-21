@@ -1,52 +1,105 @@
-"""news-image-20261121 entry: copy the built image to the output dir.
+#!/usr/bin/env python3
+"""Penyalin gambar entri untuk lomba news-image-20261121.
 
-The image (entry.png, JPEG bytes, 1024x1024) sums up Saturday 21
-November 2026's world news: Russian missiles landing in Poland (NATO
-soil) lead, with the massive Kyiv strikes, the Wall Street AI sell-off
-in correction territory, the COP31 talks running into overtime with no
-deal, and Cyclone Akvan's landfall in Odisha in the strip below. This
-program only copies those bytes to /output/entry.png (or
-$MAKEFUN_OUTPUT_DIR/entry.png); it reads nothing else and uses no
-network, so two runs write identical bytes.
+Skrip kecil ini mengambil berkas ``entry.png`` yang duduk di sebelah
+skrip ini lalu menaruh salinannya di folder keluaran sebagai
+``entry.png``. Tidak ada pengolahan gambar di sini: yang disalin
+adalah byte demi byte, supaya hasil akhirnya identik dengan aslinya.
+
+Folder keluaran dibaca dari variabel lingkungan
+``MAKEFUN_OUTPUT_DIR``; kalau variabel itu tidak diisi, dipakai
+``/output``. Sebelum menyalin, berkas diperiksa dulu: harus diawali
+tanda JPEG (``FF D8``) dan ukurannya tidak boleh melewati 1 MiB.
+Sesudah menyalin, sidik hash SHA-256 salinan dicocokkan dengan
+sumbernya; kalau tidak cocok, salinan dibuang dan program berhenti
+dengan pesan galat.
 """
 
-import hashlib
-import os
-import shutil
-import sys
+from __future__ import annotations
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCE = os.path.join(HERE, "entry.png")
+import hashlib
+import sys
+from pathlib import Path
+
+JPEG_TANDA = b"\xff\xd8"
+BATAS_BYTE = 1 * 1024 * 1024
+NAMA_BERKAS = "entry.png"
+
+
+def cari_sumber() -> Path:
+    """Kembalikan alamat berkas sumber di sebelah skrip ini."""
+    return Path(__file__).resolve().parent / NAMA_BERKAS
+
+
+def folder_keluaran() -> Path:
+    """Tentukan folder tujuan dari lingkungan, atau /output."""
+    import os
+
+    tujuan = os.environ.get("MAKEFUN_OUTPUT_DIR", "").strip()
+    return Path(tujuan) if tujuan else Path("/output")
+
+
+def sidik_sha256(berkas: Path) -> str:
+    """Hitung sidik SHA-256 dari isi sebuah berkas."""
+    pencerna = hashlib.sha256()
+    with berkas.open("rb") as gagang:
+        while True:
+            potongan = gagang.read(1024 * 1024)
+            if not potongan:
+                break
+            pencerna.update(potongan)
+    return pencerna.hexdigest()
+
+
+def periksa_berkas(sumber: Path) -> int:
+    """Pastikan sumber ada, berformat JPEG, dan ukurannya wajar.
+
+    Mengembalikan ukuran sumber dalam byte bila semua pemeriksaan
+    lolos; kalau tidak, program berhenti dengan pesan yang jelas.
+    """
+    if not sumber.is_file():
+        sys.exit(f"gagal: berkas sumber tidak ketemu di {sumber}")
+    ukuran = sumber.stat().st_size
+    if ukuran == 0:
+        sys.exit("gagal: berkas sumber kosong, tidak ada yang disalin")
+    if ukuran > BATAS_BYTE:
+        sys.exit(
+            f"gagal: berkas sumber {ukuran} byte, melewati batas {BATAS_BYTE} byte"
+        )
+    with sumber.open("rb") as gagang:
+        awal = gagang.read(2)
+    if awal != JPEG_TANDA:
+        sys.exit("gagal: berkas sumber bukan JPEG (tanda awal tidak cocok)")
+    return ukuran
+
+
+def salin_dan_cocokkan(sumber: Path, tujuan: Path) -> str:
+    """Salin sumber ke tujuan lalu cocokkan sidik hash keduanya.
+
+    Mengembalikan sidik SHA-256 sumber. Bila salinan tidak cocok,
+    salinan dihapus dan program berhenti dengan galat.
+    """
+    if sumber.resolve() == tujuan.resolve():
+        sys.exit("gagal: sumber dan tujuan itu berkas yang sama")
+    tujuan.parent.mkdir(parents=True, exist_ok=True)
+    data = sumber.read_bytes()
+    tujuan.write_bytes(data)
+    sidik_asli = hashlib.sha256(data).hexdigest()
+    if sidik_sha256(tujuan) != sidik_asli:
+        tujuan.unlink(missing_ok=True)
+        sys.exit("gagal: salinan tidak identik dengan sumber, salinan dibuang")
+    return sidik_asli
 
 
 def main() -> int:
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
-    if os.path.isfile(out_dir):
-        print(f"error: output path {out_dir!r} is a file, not a directory",
-              file=sys.stderr)
-        return 1
-    os.makedirs(out_dir, exist_ok=True)
-    dest = os.path.join(out_dir, "entry.png")
-    with open(SOURCE, "rb") as src:
-        magic = src.read(2)
-        if magic != b"\xff\xd8":
-            print("error: entry.png is not a JPEG (bad magic bytes)",
-                  file=sys.stderr)
-            return 1
-    shutil.copyfile(SOURCE, dest)
-    size = os.path.getsize(dest)
-    if size > 1048576:
-        print(f"error: entry is {size} bytes, over the 1 MiB limit",
-              file=sys.stderr)
-        return 1
-    with open(SOURCE, "rb") as f:
-        want = hashlib.sha256(f.read()).hexdigest()
-    with open(dest, "rb") as f:
-        got = hashlib.sha256(f.read()).hexdigest()
-    if want != got:
-        print("error: copied bytes differ from entry.png", file=sys.stderr)
-        return 1
-    print(f"wrote {dest} ({size} bytes, sha256 {got[:16]}...)")
+    sumber = cari_sumber()
+    ukuran = periksa_berkas(sumber)
+    tujuan = folder_keluaran() / NAMA_BERKAS
+    sidik = salin_dan_cocokkan(sumber, tujuan)
+    print(f"tersalin: {sumber} ({ukuran} byte) -> {tujuan}")
+    print(f"format diperiksa: JPEG, {ukuran} byte, di bawah batas 1 MiB")
+    print(f"sha256: {sidik}")
+    print("verifikasi: salinan identik dengan sumber")
     return 0
 
 
